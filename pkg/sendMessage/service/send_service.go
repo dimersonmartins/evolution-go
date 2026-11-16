@@ -3106,9 +3106,38 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 		},
 	}
 
+	// Build biz/bot nodes injected directly in the XMPP stanza — required for mobile rendering,
+	// same pattern as SendButton. Carousel cards mix CTA/reply buttons, so name="mixed".
+	// The <bot biz_bot="1"/> node is required for 1:1 chats (skipped on groups).
+	carouselBizNodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Content: []waBinary.Node{{
+				Tag: "interactive",
+				Attrs: waBinary.Attrs{
+					"type": "native_flow",
+					"v":    "1",
+				},
+				Content: []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"name": "mixed",
+					},
+				}},
+			}},
+		},
+	}
+	if !strings.Contains(data.Number, "@g.us") {
+		carouselBizNodes = append(carouselBizNodes, waBinary.Node{
+			Tag:   "bot",
+			Attrs: waBinary.Attrs{"biz_bot": "1"},
+		})
+	}
+
 	message, err := s.SendMessage(instance, msg, "InteractiveMessage", &SendDataStruct{
-		Number: data.Number,
-		Delay:  data.Delay,
+		Number:          data.Number,
+		Delay:           data.Delay,
+		AdditionalNodes: &carouselBizNodes,
 	})
 
 	if err != nil {
