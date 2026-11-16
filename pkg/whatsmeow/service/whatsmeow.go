@@ -627,6 +627,12 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 			cd.Instance.Connected = false
 
+			// Keep the manual disconnect marker written by the API before the kill signal.
+			current, getErr := w.instanceRepository.GetInstanceByID(cd.Instance.Id)
+			if getErr == nil && current.DisconnectReason == instance_model.ManualDisconnectReason {
+				cd.Instance.DisconnectReason = instance_model.ManualDisconnectReason
+			}
+
 			err := w.instanceRepository.UpdateConnected(cd.Instance.Id, cd.Instance.Connected, cd.Instance.DisconnectReason)
 			if err != nil {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance: %s", cd.Instance.Id, err)
@@ -2470,7 +2476,18 @@ func (w whatsmeowService) ConnectOnStartup(clientName string) {
 
 	w.loggerWrapper.GetLogger(clientName).LogInfo("[%s] Found %d connected instances", clientName, len(instances))
 
-	for _, instance := range instances {
+	if w.config.ConnectOnStartupPaired {
+		paired := w.getReconnectablePairedInstances(clientName)
+		w.loggerWrapper.GetLogger(clientName).LogInfo("[%s] Found %d disconnected instances with a stored session", clientName, len(paired))
+		instances = append(instances, paired...)
+	}
+
+	for index, instance := range instances {
+		// Spread the connections so a restart does not open every session at once.
+		if w.config.ConnectOnStartupPaired && index > 0 {
+			time.Sleep(startupConnectInterval)
+		}
+
 		w.loggerWrapper.GetLogger(clientName).LogInfo("[%s] Starting client for user '%s'", clientName, instance.Id)
 
 		err := w.StartInstance(instance.Id)
@@ -2478,6 +2495,54 @@ func (w whatsmeowService) ConnectOnStartup(clientName string) {
 			w.loggerWrapper.GetLogger(clientName).LogError("[%s] Error starting client: %s", clientName, err)
 		}
 	}
+}
+
+const startupConnectInterval = 1500 * time.Millisecond
+
+// getReconnectablePairedInstances returns disconnected instances that were not disconnected
+// on purpose and whose WhatsApp session still exists in the auth store. Instances logged out
+// from the phone have their device removed from the store, so they are left out instead of
+// generating QR codes nobody will scan.
+func (w whatsmeowService) getReconnectablePairedInstances(clientName string) []*instance_model.Instance {
+	candidates, err := w.instanceRepository.GetDisconnectedPairedInstances(clientName)
+	if err != nil {
+		w.loggerWrapper.GetLogger(clientName).LogError("[%s] Error getting disconnected paired instances: %s", clientName, err)
+		return nil
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	container, err := w.getAuthContainer()
+	if err != nil {
+		w.loggerWrapper.GetLogger(clientName).LogError("[%s] Error getting auth container: %s", clientName, err)
+		return nil
+	}
+
+	var result []*instance_model.Instance
+	for _, instance := range candidates {
+		jid, ok := utils.ParseJID(instance.Jid)
+		if !ok {
+			w.loggerWrapper.GetLogger(clientName).LogWarn("[%s] Skipping '%s': invalid jid", clientName, instance.Id)
+			continue
+		}
+
+		device, err := container.GetDevice(context.Background(), jid)
+		if err != nil {
+			w.loggerWrapper.GetLogger(clientName).LogError("[%s] Skipping '%s': error reading session: %s", clientName, instance.Id, err)
+			continue
+		}
+
+		if device == nil {
+			w.loggerWrapper.GetLogger(clientName).LogInfo("[%s] Skipping '%s': no stored session", clientName, instance.Id)
+			continue
+		}
+
+		result = append(result, instance)
+	}
+
+	return result
 }
 
 func getExtensionFromMimeType(mimeType string) string {

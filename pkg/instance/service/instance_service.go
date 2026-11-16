@@ -316,12 +316,21 @@ func (i instances) Disconnect(instance *instance_model.Instance) (*instance_mode
 
 	if client.IsConnected() {
 		if client.IsLoggedIn() {
+			// Mark the manual disconnect before the kill signal, so the kill handler keeps the
+			// reason and the startup reconnection of paired instances skips this one.
+			instance.Connected = false
+			instance.DisconnectReason = instance_model.ManualDisconnectReason
+			err := i.instanceRepository.UpdateConnected(instance.Id, instance.Connected, instance.DisconnectReason)
+			if err != nil {
+				return instance, err
+			}
+
 			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
 			i.killChannel[instance.Id] <- true
 
 			instance.Events = ""
 
-			err := i.instanceRepository.Update(instance)
+			err = i.instanceRepository.Update(instance)
 			if err != nil {
 				return instance, err
 			}

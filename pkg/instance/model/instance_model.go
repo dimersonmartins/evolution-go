@@ -7,6 +7,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// ManualDisconnectReason marks an instance disconnected on purpose through the API,
+// so the startup reconnection of paired instances leaves it alone.
+const ManualDisconnectReason = "Manual disconnect"
+
 type Instance struct {
 	Id               string    `json:"id" gorm:"type:uuid;primaryKey"`
 	Name             string    `json:"name"`
